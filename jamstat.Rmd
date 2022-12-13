@@ -1,0 +1,172 @@
+---
+title: "Autokorelasi Spasial"
+author: "Khairani Cahyoja Utami"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r}
+library(sf)
+library(ggplot2)
+library(tigris)
+library(dplyr)
+library(tidyverse)
+library(rgdal)
+library(spdep)
+```
+```{r}
+indo <-readOGR(dsn='D:/jamstat 2022/Admin2Kabupaten/idn_admbnda_adm2_bps_20200401.shp',
+               layer='idn_admbnda_adm2_bps_20200401')
+```
+```{r}
+Admin2Kabupaten<-'D:/jamstat 2022/Admin2Kabupaten/idn_admbnda_adm2_bps_20200401.shp'
+glimpse(Admin2Kabupaten)
+indo<-st_read(Admin2Kabupaten)
+glimpse(indo)
+```
+```{r}
+panel <- read.csv("D:/jamstat 2022/paneljatim.csv", sep=";")
+panel
+```
+
+```{r}
+panel.sort <- panel[1:38,]
+panel.sort <- panel.sort[order(panel.sort$Kabupaten.kota),]
+panel.sort
+```
+
+```{r}
+jatim <- geo_join(spatial_data=indo, 
+                 data_frame=panel.sort, by_sp="ADM2_PCODE", 
+                 by_df="ADM2_PCODE", how = "inner")
+jatim
+```
+```{r}
+mycol <- c("#65C18C", "#F1E0AC", "#FFBC80", "#F76E11", "#FC4F4F")
+peta <- ggplot() +
+        geom_sf(data=jatim,aes(fill=data_covid)) +
+        scale_fill_gradientn(colours = mycol) +
+        labs(title = "Sebaran Kasus Covid-19 di Jawa Timur") + theme_bw()
+peta
+```
+
+```{r}
+#matriks bobot
+#QUEENN
+#q.w <-poly2nb(jatim,row.names=jatim$Kabupaten.kota)
+coor <- st_as_sf(jatim)
+coords <- st_centroid(st_geometry(coor), of_largest_polygon=TRUE)
+addnbs <- function(jatim){
+  
+  queen_nb <- poly2nb(jatim, row.names=jatim$ADM2_EN, queen=TRUE)
+  
+  count = card(queen_nb)
+  if(!any(count==0)){
+    return(queen_nb)
+  }
+  
+  ## get nearest neighbour index, use centroids:
+  nnbs = knearneigh(coords)$nn
+  
+  no_edges_from = which(count==0)
+  for(i in no_edges_from){
+    queen_nb[[i]] = nnbs[i]
+  }
+  return(queen_nb)
+}
+q.n = addnbs(jatim)
+par(mfrow=c(1,1))
+q.c <- nb2mat(q.n,style="B",zero.policy = TRUE)
+q <- as.matrix(q.n)
+queen <-as.data.frame(q.c) 
+write.csv(queen,"D:/jamstat 2022/queen.csv",row.names = F)
+queen
+```
+```{r}
+plot(st_geometry(coor))
+plot(q.n, coords, pch = 19, cex = 0.6, add = TRUE, col = "red")
+title(main="Queen Contiguity")
+```
+```{r}
+#Moran Rata-rata
+#queen
+q.l <- nb2listw(q.n,style="W",zero.policy = T)
+summary(q.l)
+q.l
+moran(jatim$data_covid, q.l, n=length(q.l$neighbours), S0=Szero(q.l))
+moran.test(jatim$data_covid, q.l,randomisation=T, alternative="greater",zero.policy = TRUE, na.action = na.omit)
+moran.plot(jatim$data_covid, q.l, labels=jatim$Kabupaten.kota,main="Moran Plot menggunakan Matriks Queen Contiguity")
+
+```
+```{r}
+#Moran Lokal
+local <- localmoran(x = jatim$data_covid, listw = nb2listw(q.n,style="W"))
+local
+```
+quadrant <- vector(mode="numeric",length=nrow(local))
+quadrant[]
+
+```{r}
+
+install.packages("tmap")
+install.packages("tmaptools")
+```
+```{r}
+library(tmap)
+library(tmaptools)
+```
+```{r}
+quadrant <- vector(mode="numeric",length=nrow(local))
+
+# centers the variable of interest around its mean
+m.qualification <- jatim$data_covid - mean(jatim$data_covid)     
+
+# centers the local Moran's around the mean
+m.local <- local[,1] - mean(local[,1])    
+
+# significance threshold
+signif <- 0.1
+
+# builds a data quadrant
+quadrant[m.qualification >0 & m.local>0] <- 4  
+quadrant[m.qualification <0 & m.local<0] <- 1      
+quadrant[m.qualification <0 & m.local>0] <- 2
+quadrant[m.qualification >0 & m.local<0] <- 3
+quadrant[local[,5]>signif] <- 0  
+quadrant
+
+# plot in r
+brks <- c(0,4)
+colors <- c("white","red4",rgb(0,0,1,alpha=0.4),rgb(1,0,0,alpha=0.4),"red")
+plot(jatim$geometry,border="lightgray",col=colors[findInterval(quadrant,brks,all.inside=FALSE)])
+box()
+legend("bottomleft", legend = c("insignificant","significant"),
+       fill=colors,bty="n")+ labs(title = "Pola signifikansi pengujian LISA")
+```
+```{r}
+moran.map <- cbind(jatim, local)
+tm_shape(moran.map) +
+  tm_fill(col = "Ii",
+          style = "kmeans",
+          title = "local moran statistic") 
+```
+
+```{r}
+mycol <- c("#F1E0AC","#65C18C")
+peta <- ggplot() +
+        geom_sf(data=jatim,aes(fill=DEA)) +
+        scale_fill_gradientn(colours = mycol) +
+        labs(title = "DEA") + theme_bw()
+peta
+```
